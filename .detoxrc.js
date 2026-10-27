@@ -11,7 +11,7 @@ module.exports = {
   },
   "apps": {
     "ios.sim.debug": {
-      "type": "ios.simulator",
+      "type": "ios.app",
       "binaryPath": "ios/build/Build/Products/Debug-iphonesimulator/MyTestApp.app",
       "build": "xcodebuild -workspace 'ios/MyTestApp.xcworkspace' -scheme 'MyTestApp' -configuration Debug -sdk iphonesimulator -derivedDataPath ios/build COMPILER_INDEX_STORE_ENABLE=NO"
     }
