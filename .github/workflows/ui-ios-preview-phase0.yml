@@ -44,6 +44,22 @@ jobs:
       - name: Install the Phase 0 WebSocket server dependency
         run: npm ci --prefix phase0 --ignore-scripts --no-audit --no-fund
 
+      - name: Install Ruby dependencies
+        if: hashFiles('Gemfile') != ''
+        run: bundle install
+
+      - name: Install CocoaPods dependencies
+        if: hashFiles('ios/Podfile') != ''
+        run: |
+          cd ios
+          if [ -f ../Gemfile ]; then
+            bundle exec pod install
+          else
+            pod install
+          fi
+        env:
+          LANG: en_US.UTF-8
+
       - name: Install IDB and Cloudflare Quick Tunnel
         run: |
           brew tap facebook/fb
