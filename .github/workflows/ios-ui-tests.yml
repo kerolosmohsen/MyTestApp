@@ -81,7 +81,7 @@ jobs:
           trap 'kill "$metro_pid" 2>/dev/null || true' EXIT
 
           for attempt in {1..60}; do
-            if curl --silent --fail http://127.0.0.1:8081/status | grep -q 'packager-status:running'; then
+            if curl --silent --fail --max-time 2 http://127.0.0.1:8081/status | grep -q 'packager-status:running'; then
               echo "Metro is ready."
               break
             fi
@@ -93,8 +93,18 @@ jobs:
             sleep 2
           done
 
-          npx detox test --configuration ios.sim.debug --headless \
-            --record-videos all --take-screenshots all --loglevel verbose
+          curl --silent --show-error --fail --max-time 300 \
+            --output /dev/null \
+            'http://127.0.0.1:8081/index.bundle?platform=ios&dev=true&minify=false'
+
+          if npx detox test --configuration ios.sim.debug --headless \
+            --record-videos all --take-screenshots all --loglevel verbose; then
+            :
+          else
+            status=$?
+            cat "$RUNNER_TEMP/metro.log"
+            exit "$status"
+          fi
         env:
           LANG: en_US.UTF-8
 
