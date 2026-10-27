@@ -1,0 +1,99 @@
+name: iOS UI Tests
+
+on:
+  push:
+    branches: [main, master, develop]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  ios-ui-tests:
+    name: Run UI Tests on iOS Simulator
+    runs-on: macos-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+
+      - name: Install Node dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          elif [ -f pnpm-lock.yaml ]; then
+            corepack enable
+            pnpm install --frozen-lockfile
+          elif [ -f yarn.lock ]; then
+            corepack enable
+            yarn install --frozen-lockfile
+          else
+            npm install
+          fi
+
+      - name: Install Ruby dependencies
+        if: hashFiles('Gemfile') != ''
+        run: bundle install
+
+      - name: Install CocoaPods dependencies
+        if: hashFiles('ios/Podfile') != ''
+        run: |
+          cd ios
+          if [ -f ../Gemfile ]; then
+            bundle exec pod install
+          else
+            pod install
+          fi
+        env:
+          LANG: en_US.UTF-8
+
+      - name: Install applesimutils
+        run: |
+          brew tap wix/brew
+          brew install applesimutils
+
+      - name: Select an available iPhone simulator
+        run: |
+          SIMULATOR=$(xcrun simctl list devices available \
+            | sed -n 's/^[[:space:]]*\(iPhone [^()]*\) (.*/\1/p' \
+            | grep -Ev 'Pro|Plus|Max|mini|Air' \
+            | head -n 1 \
+            | sed 's/[[:space:]]*$//')
+          if [ -z "$SIMULATOR" ]; then
+            echo "No available iPhone simulator was found on this runner." >&2
+            exit 1
+          fi
+          echo "UI_IOS_SIMULATOR=$SIMULATOR" >> "$GITHUB_ENV"
+          echo "Using $SIMULATOR"
+
+      - name: Build app for the simulator
+        run: npx detox build --configuration ios.sim.debug
+        env:
+          LANG: en_US.UTF-8
+
+      - name: Run UI tests
+        run: >-
+          npx detox test --configuration ios.sim.debug --headless
+          --record-videos all --take-screenshots all --loglevel verbose
+        env:
+          LANG: en_US.UTF-8
+
+      - name: Upload screenshots and videos
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: ios-ui-test-artifacts-${{ github.run_number }}
+          path: artifacts/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Add run summary
+        if: always()
+        run: |
+          echo "## iOS UI Test Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Run: ${{ github.run_number }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Branch: ${{ github.ref_name }}" >> "$GITHUB_STEP_SUMMARY"
