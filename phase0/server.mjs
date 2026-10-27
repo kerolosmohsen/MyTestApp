@@ -306,9 +306,12 @@ wsServer.on('connection', (ws) => {
         const commandMs = Date.now() - started;
         const commandCompletedAt = Date.now();
         const afterTapFrame = await nextFrame();
+        const frameWaitMs = Date.now() - commandCompletedAt;
         if (afterTapFrame) await writeFile(path.join(evidenceDir, 'simulator-after-tap.jpg'), afterTapFrame);
-        sendJson(ws, {type: 'action-result', action: 'tap', ok: true, commandMs, frameWaitMs: Date.now() - commandCompletedAt, frameAt: lastFrameAt});
+        log(`tap idbCommandMs=${commandMs} nextFrameMs=${frameWaitMs} totalMs=${Date.now() - started} frameCaptured=${Boolean(afterTapFrame)}`);
+        sendJson(ws, {type: 'action-result', action: 'tap', ok: true, commandMs, frameWaitMs, frameAt: lastFrameAt});
       } catch (error) {
+        log(`tap failed: ${error.message.slice(0, 400)}`);
         sendJson(ws, {type: 'action-result', action: 'tap', ok: false, error: error.message});
       }
       return;
