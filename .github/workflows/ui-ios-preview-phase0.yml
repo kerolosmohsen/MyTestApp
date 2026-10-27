@@ -1,0 +1,167 @@
+name: ui-ios preview · phase 0 feasibility
+
+on:
+  workflow_dispatch:
+    inputs:
+      token:
+        description: One-use random session token (masked by the runner)
+        required: true
+        type: string
+      device:
+        description: Simulator preference
+        required: true
+        default: iphone16
+        type: choice
+        options:
+          - iphone16
+          - latest
+
+permissions:
+  contents: read
+
+jobs:
+  preview:
+    runs-on: macos-latest
+    timeout-minutes: 25
+    steps:
+      - name: Mask the one-use token before any other command
+        env:
+          SESSION_TOKEN: ${{ inputs.token }}
+        run: echo "::add-mask::$SESSION_TOKEN"
+
+      - name: Check out MyTestApp
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install JavaScript dependencies
+        run: npm ci
+
+      - name: Install the Phase 0 WebSocket server dependency
+        run: npm ci --prefix phase0 --ignore-scripts --no-audit --no-fund
+
+      - name: Install IDB and Cloudflare Quick Tunnel
+        run: |
+          brew install facebook/fb/idb cloudflared
+          idb --help >/dev/null
+          idb ui tap --help
+          idb video-stream --help
+          cloudflared --version
+
+      - name: Select and boot an available iPhone Simulator
+        id: simulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          DEVICE_LIST="$(xcrun simctl list devices available)"
+          DEVICE_NAME=""
+          if [[ "${{ inputs.device }}" == "iphone16" ]]; then
+            DEVICE_NAME="$(printf '%s\n' "$DEVICE_LIST" | sed -n 's/^[[:space:]]*\(iPhone 16\) (.*/\1/p' | head -n 1)"
+          fi
+          if [[ -z "$DEVICE_NAME" ]]; then
+            DEVICE_NAME="$(printf '%s\n' "$DEVICE_LIST" | sed -n 's/^[[:space:]]*\(iPhone [^()]*\) (.*/\1/p' | grep -Ev 'Pro|Plus|Max|mini|Air|Duo|SE' | head -n 1 | sed 's/[[:space:]]*$//')"
+          fi
+          if [[ -z "$DEVICE_NAME" ]]; then
+            echo 'No supported iPhone Simulator was found.' >&2
+            exit 1
+          fi
+          UDID="$(printf '%s\n' "$DEVICE_LIST" | grep -F "$DEVICE_NAME (" | head -n 1 | sed -E 's/.*\(([A-F0-9-]{36})\).*/\1/')"
+          if [[ ! "$UDID" =~ ^[A-F0-9-]{36}$ ]]; then
+            echo "Could not resolve Simulator UDID for $DEVICE_NAME." >&2
+            exit 1
+          fi
+          echo "name=$DEVICE_NAME" >> "$GITHUB_OUTPUT"
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+          echo "Using simulator: $DEVICE_NAME ($UDID)"
+          BOOT_STARTED="$(date +%s)"
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b
+          BOOT_ENDED="$(date +%s)"
+          echo "boot_seconds=$((BOOT_ENDED - BOOT_STARTED))" >> "$GITHUB_OUTPUT"
+          echo "Simulator boot took $((BOOT_ENDED - BOOT_STARTED)) seconds."
+
+      - name: Build, install, and launch the app
+        env:
+          FORCE_BUNDLING: '1'
+          LANG: en_US.UTF-8
+          UI_IOS_SIMULATOR: ${{ steps.simulator.outputs.name }}
+        run: |
+          set -euo pipefail
+          npx detox build --configuration ios.sim.debug
+          APP_PATH='ios/build/Build/Products/Debug-iphonesimulator/MyTestApp.app'
+          test -d "$APP_PATH"
+          BUNDLE_ID="/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$APP_PATH/Info.plist""
+          BUNDLE_ID=$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$APP_PATH/Info.plist")
+          echo "Installing $BUNDLE_ID on ${{ steps.simulator.outputs.name }}"
+          xcrun simctl install '${{ steps.simulator.outputs.udid }}' "$APP_PATH"
+          xcrun simctl launch '${{ steps.simulator.outputs.udid }}' "$BUNDLE_ID"
+
+      - name: Install the IDB companion for the simulator
+        run: |
+          set -euo pipefail
+          idb connect '${{ steps.simulator.outputs.udid }}'
+          idb ui describe-all --udid '${{ steps.simulator.outputs.udid }}' --json > "$RUNNER_TEMP/idb-screen.json"
+          node -e "const x=require(process.argv[1]);if(!x.screen?.width||!x.screen?.height)throw Error('IDB returned no screen point dimensions');console.log('Screen points:',x.screen.width+'x'+x.screen.height)" "$RUNNER_TEMP/idb-screen.json"
+
+      - name: Run the authenticated preview tunnel
+        env:
+          SESSION_TOKEN: ${{ inputs.token }}
+          SIMULATOR_UDID: ${{ steps.simulator.outputs.udid }}
+          SIMULATOR_NAME: ${{ steps.simulator.outputs.name }}
+          BOOT_SECONDS: ${{ steps.simulator.outputs.boot_seconds }}
+          LANG: en_US.UTF-8
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "::add-mask::$SESSION_TOKEN"
+          cloudflared tunnel --url http://127.0.0.1:8787 > "$RUNNER_TEMP/cloudflared.log" 2>&1 &
+          TUNNEL_PID=$!
+          cleanup() {
+            kill "$TUNNEL_PID" 2>/dev/null || true
+            wait "$TUNNEL_PID" 2>/dev/null || true
+          }
+          trap cleanup EXIT INT TERM
+          TUNNEL_URL=""
+          for attempt in $(seq 1 90); do
+            TUNNEL_URL="$(grep -Eo 'https://[a-z0-9-]+\.trycloudflare\.com' "$RUNNER_TEMP/cloudflared.log" | head -n 1 || true)"
+            if [[ -n "$TUNNEL_URL" ]]; then break; fi
+            if ! kill -0 "$TUNNEL_PID" 2>/dev/null; then
+              cat "$RUNNER_TEMP/cloudflared.log"
+              echo 'cloudflared exited before it provided a tunnel URL.' >&2
+              exit 1
+            fi
+            sleep 1
+          done
+          if [[ -z "$TUNNEL_URL" ]]; then
+            cat "$RUNNER_TEMP/cloudflared.log"
+            echo 'cloudflared did not provide a tunnel URL within 90 seconds.' >&2
+            exit 1
+          fi
+          echo "PHASE0_TUNNEL_URL=$TUNNEL_URL"
+          echo "Simulator boot: ${BOOT_SECONDS}s; selected device: $SIMULATOR_NAME"
+          ALLOWED_ORIGIN="$TUNNEL_URL" IDLE_TIMEOUT_MS=300000 MAX_SESSION_MS=900000 node phase0/server.mjs
+
+      - name: Save Phase 0 evidence and runner details
+        if: always()
+        run: |
+          mkdir -p phase0/runner-evidence
+          cp "$RUNNER_TEMP/cloudflared.log" phase0/runner-evidence/cloudflared.log 2>/dev/null || true
+          cp "$RUNNER_TEMP/idb-screen.json" phase0/runner-evidence/idb-screen.json 2>/dev/null || true
+          {
+            echo "device=${{ steps.simulator.outputs.name }}"
+            echo "simulator_boot_seconds=${{ steps.simulator.outputs.boot_seconds }}"
+            echo "run_id=${{ github.run_id }}"
+          } > phase0/runner-evidence/session.txt
+
+      - name: Upload Phase 0 evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ui-ios-phase0-${{ github.run_id }}
+          path: phase0/runner-evidence/
+          if-no-files-found: warn
+          retention-days: 7

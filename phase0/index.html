@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ui-ios preview · Phase 0</title>
+    <style>
+      :root { color-scheme: dark; font: 14px/1.4 Inter, ui-sans-serif, system-ui, sans-serif; background: #0d1117; color: #e6edf3; }
+      * { box-sizing: border-box; }
+      body { margin: 0; min-height: 100vh; display: grid; grid-template-rows: auto 1fr auto; }
+      header, footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 18px; background: #161b22; border-bottom: 1px solid #30363d; }
+      footer { border: 0; border-top: 1px solid #30363d; justify-content: center; flex-wrap: wrap; }
+      main { min-height: 0; display: grid; place-items: center; padding: 22px; }
+      .device { height: min(76vh, 860px); width: auto; max-width: 90vw; aspect-ratio: 402 / 874; padding: 10px; border-radius: 38px; background: #242a33; box-shadow: 0 18px 60px #0009; position: relative; }
+      .glass { width: 100%; height: 100%; overflow: hidden; border-radius: 29px; background: #000; position: relative; }
+      .glass img { display: block; width: 100%; height: 100%; object-fit: contain; touch-action: none; user-select: none; }
+      .status { display: flex; gap: 8px; align-items: center; color: #8b949e; font-size: 12px; }
+      .dot { width: 8px; height: 8px; border-radius: 50%; background: #d29922; }
+      .dot.on { background: #3fb950; }
+      button { border: 1px solid #3d444d; background: #21262d; color: #e6edf3; border-radius: 8px; padding: 9px 14px; cursor: pointer; }
+      button:hover { background: #30363d; }
+      button:disabled { opacity: .45; cursor: default; }
+      #message { color: #f0b72f; min-width: 120px; text-align: center; }
+      #details { color: #8b949e; }
+      .warn { position: fixed; bottom: 58px; left: 0; right: 0; text-align: center; color: #8b949e; font-size: 11px; padding: 0 12px; }
+      @media (max-height: 620px) { .device { height: 70vh; } }
+    </style>
+  </head>
+  <body>
+    <header>
+      <strong>ui-ios preview · Phase 0</strong>
+      <div class="status"><span id="dot" class="dot"></span><span id="connection">Connecting</span><span id="deviceInfo"></span><span id="details"></span></div>
+    </header>
+    <main>
+      <div id="device" class="device" aria-label="iPhone simulator">
+        <div class="glass"><img id="screen" alt="Live iPhone Simulator screen" draggable="false" /></div>
+      </div>
+    </main>
+    <footer>
+      <button id="swipe" disabled>Swipe up</button>
+      <button id="stop" disabled>Stop session</button>
+      <span id="message" role="status">Waiting for simulator frames…</span>
+    </footer>
+    <div class="warn">Personal development and testing preview. GitHub Actions is temporary; this session stops when you leave or time out.</div>
+    <script>
+      (() => {
+        const image = document.getElementById('screen');
+        const dot = document.getElementById('dot');
+        const connection = document.getElementById('connection');
+        const deviceInfo = document.getElementById('deviceInfo');
+        const details = document.getElementById('details');
+        const message = document.getElementById('message');
+        const swipeButton = document.getElementById('swipe');
+        const stopButton = document.getElementById('stop');
+        let socket;
+        let token = sessionStorage.getItem('ui-ios-preview-token') || new URLSearchParams(location.hash.slice(1)).get('t');
+        let frameTimes = [];
+        let totalFrames = 0;
+        let ready = false;
+        let reconnectDelay = 500;
+        let lastTapAt = 0;
+        let pendingTap = null;
+        let logicalSize = null;
+
+        if (!token) {
+          connection.textContent = 'Session link is missing';
+          message.textContent = 'Start ui-ios again for a fresh link.';
+          return;
+        }
+        sessionStorage.setItem('ui-ios-preview-token', token);
+        history.replaceState(null, '', location.pathname + location.search);
+
+        function setConnected(connected) {
+          dot.classList.toggle('on', connected);
+          connection.textContent = connected ? 'Connected' : 'Reconnecting';
+          swipeButton.disabled = !connected;
+          stopButton.disabled = !connected;
+        }
+        function send(payload) {
+          if (socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(payload));
+        }
+        function reconnect() {
+          if (!token) return;
+          setConnected(false);
+          socket = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws`);
+          socket.binaryType = 'blob';
+          socket.onopen = () => socket.send(JSON.stringify({type: 'auth', token}));
+          socket.onmessage = (event) => {
+            if (typeof event.data !== 'string') {
+              const url = URL.createObjectURL(event.data);
+              const previous = image.dataset.objectUrl;
+              image.src = url;
+              image.dataset.objectUrl = url;
+              if (previous) URL.revokeObjectURL(previous);
+              totalFrames += 1;
+              if (pendingTap && pendingTap.completed && totalFrames > pendingTap.frameAtStart) {
+                message.textContent = `Tap rendered · IDB ${pendingTap.commandMs} ms · next frame ${Date.now() - pendingTap.startedAt} ms`;
+                pendingTap = null;
+              }
+              const now = performance.now();
+              frameTimes.push(now);
+              frameTimes = frameTimes.filter((time) => now - time < 3000);
+              if (frameTimes.length > 1) {
+                const fps = (frameTimes.length - 1) / ((frameTimes.at(-1) - frameTimes[0]) / 1000);
+                details.textContent = `${fps.toFixed(1)} fps`;
+              }
+              if (logicalSize && image.naturalWidth) {
+                const scale = image.naturalWidth / logicalSize.width;
+                deviceInfo.textContent = `${deviceInfo.dataset.deviceName} · ${logicalSize.width}×${logicalSize.height} pt · ${scale.toFixed(2)}×`;
+              }
+              if (!ready) message.textContent = 'Live simulator screen';
+              return;
+            }
+            const data = JSON.parse(event.data);
+            if (data.type === 'ready') {
+              ready = true;
+              reconnectDelay = 500;
+              setConnected(true);
+              logicalSize = data.logicalSize;
+              deviceInfo.dataset.deviceName = data.deviceName;
+              deviceInfo.textContent = data.deviceName;
+              message.textContent = `Stream: ${data.provider}`;
+            } else if (data.type === 'provider') {
+              message.textContent = `Stream: ${data.provider}`;
+            } else if (data.type === 'action-result') {
+              if (!data.ok) message.textContent = data.error || 'Simulator action failed';
+              else if (data.action === 'tap') {
+                if (pendingTap) {
+                  pendingTap.completed = true;
+                  pendingTap.commandMs = data.commandMs;
+                  message.textContent = `Tap sent · IDB ${data.commandMs} ms · waiting for next frame…`;
+                } else message.textContent = `Tap sent · IDB ${data.commandMs} ms · next frame ${data.frameWaitMs} ms`;
+              } else message.textContent = 'Swipe sent';
+            } else if (data.type === 'error') message.textContent = data.message;
+            else if (data.type === 'stopping') message.textContent = 'Stopping preview…';
+          };
+          socket.onclose = (event) => {
+            setConnected(false);
+            if (event.code === 1008) {
+              token = '';
+              sessionStorage.removeItem('ui-ios-preview-token');
+              connection.textContent = 'Session expired';
+              message.textContent = 'This link expired or another viewer is connected. Run ui-ios again.';
+              return;
+            }
+            setTimeout(reconnect, reconnectDelay);
+            reconnectDelay = Math.min(5000, reconnectDelay * 1.8);
+          };
+          socket.onerror = () => socket.close();
+        }
+
+        document.getElementById('device').addEventListener('pointerup', (event) => {
+          if (!ready || event.target !== image) return;
+          const rect = image.getBoundingClientRect();
+          const scale = Math.min(rect.width / image.naturalWidth, rect.height / image.naturalHeight);
+          const shownWidth = image.naturalWidth * scale;
+          const shownHeight = image.naturalHeight * scale;
+          const left = rect.left + (rect.width - shownWidth) / 2;
+          const top = rect.top + (rect.height - shownHeight) / 2;
+          const x = (event.clientX - left) / shownWidth;
+          const y = (event.clientY - top) / shownHeight;
+          if (x < 0 || x > 1 || y < 0 || y > 1) return;
+          lastTapAt = Date.now();
+          pendingTap = {startedAt: lastTapAt, frameAtStart: totalFrames, completed: false, commandMs: 0};
+          send({type: 'tap', x, y});
+          message.textContent = 'Sending tap…';
+        });
+        swipeButton.addEventListener('click', () => send({type: 'swipe', x1: .5, y1: .78, x2: .5, y2: .2}));
+        stopButton.addEventListener('click', () => send({type: 'stop'}));
+        setInterval(() => send({type: 'heartbeat'}), 30_000);
+        reconnect();
+      })();
+    </script>
+  </body>
+</html>

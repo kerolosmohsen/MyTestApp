@@ -78,6 +78,7 @@ yarn-error.log
 artifacts/
 ios/build/
 test-output*/
+phase0/runner-evidence/
 
 # Local secrets and credentials
 .env*
