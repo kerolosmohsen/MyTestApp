@@ -17,7 +17,7 @@ on:
           - latest
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   preview:
@@ -46,11 +46,15 @@ jobs:
 
       - name: Install IDB and Cloudflare Quick Tunnel
         run: |
-          brew install facebook/fb/idb cloudflared
+          brew tap facebook/fb
+          brew trust --formula facebook/fb/idb-cli
+          brew trust --formula facebook/fb/idb-companion
+          brew install facebook/fb/idb-cli facebook/fb/idb-companion cloudflared
           idb --help >/dev/null
           idb ui tap --help
           idb video-stream --help
           cloudflared --version
+          brew list --versions idb-cli idb-companion cloudflared
 
       - name: Select and boot an available iPhone Simulator
         id: simulator
@@ -143,6 +147,15 @@ jobs:
           fi
           echo "PHASE0_TUNNEL_URL=$TUNNEL_URL"
           echo "Simulator boot: ${BOOT_SECONDS}s; selected device: $SIMULATOR_NAME"
+          SESSION_BRANCH="phase0/session-${GITHUB_RUN_ID}"
+          mkdir -p phase0/runner-evidence
+          node -e 'const fs=require("fs");const p=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));if(!p.screen?.width||!p.screen?.height)throw Error("IDB screen dimensions missing");process.stdout.write(JSON.stringify({tunnelUrl:process.argv[2],deviceName:process.argv[3],runId:process.argv[4],logicalSize:{width:p.screen.width,height:p.screen.height},createdAt:new Date().toISOString()}))' "$RUNNER_TEMP/idb-screen.json" "$TUNNEL_URL" "$SIMULATOR_NAME" "$GITHUB_RUN_ID" > phase0/runner-evidence/session.json
+          git switch --create "$SESSION_BRANCH" "$GITHUB_SHA"
+          git add --force phase0/runner-evidence/session.json
+          git -c user.name='github-actions' -c user.email='github-actions@users.noreply.github.com' commit -m "phase 0: publish temporary tunnel metadata"
+          git push origin "$SESSION_BRANCH"
+          git switch --detach "$GITHUB_SHA"
+          echo "Temporary session metadata branch: $SESSION_BRANCH"
           ALLOWED_ORIGIN="$TUNNEL_URL" IDLE_TIMEOUT_MS=300000 MAX_SESSION_MS=900000 node phase0/server.mjs
 
       - name: Save Phase 0 evidence and runner details
