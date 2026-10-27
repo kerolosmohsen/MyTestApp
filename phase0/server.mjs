@@ -26,6 +26,11 @@ await mkdir(evidenceDir, {recursive: true});
 
 function findScreenSize(value) {
   if (!value || typeof value !== 'object') return null;
+  if (value.screen_dimensions) {
+    const width = Number(value.screen_dimensions.width_points ?? value.screen_dimensions.width);
+    const height = Number(value.screen_dimensions.height_points ?? value.screen_dimensions.height);
+    if (width > 0 && height > 0) return {width, height};
+  }
   if (value.screen && Number.isFinite(value.screen.width) && Number.isFinite(value.screen.height)) {
     return {width: value.screen.width, height: value.screen.height};
   }
@@ -36,7 +41,7 @@ function findScreenSize(value) {
   return null;
 }
 
-const described = spawnSync('idb', ['ui', 'describe-all', '--udid', udid, '--json'], {
+const described = spawnSync('idb', ['describe', '--udid', udid, '--json'], {
   encoding: 'utf8',
   timeout: 20_000,
   maxBuffer: 8 * 1024 * 1024,
@@ -50,7 +55,7 @@ if (described.status === 0) {
   }
 }
 if (!logicalSize) {
-  throw new Error(`Could not read simulator point dimensions from idb ui describe-all (exit ${described.status ?? 'unknown'}).`);
+  throw new Error(`Could not read simulator point dimensions from idb describe (exit ${described.status ?? 'unknown'}).`);
 }
 
 const clients = new Set();

@@ -119,13 +119,15 @@ jobs:
           echo "Installing $BUNDLE_ID on ${{ steps.simulator.outputs.name }}"
           xcrun simctl install '${{ steps.simulator.outputs.udid }}' "$APP_PATH"
           xcrun simctl launch '${{ steps.simulator.outputs.udid }}' "$BUNDLE_ID"
+          echo "APP_BUNDLE_ID=$BUNDLE_ID" >> "$GITHUB_ENV"
 
       - name: Install the IDB companion for the simulator
         run: |
           set -euo pipefail
           idb connect '${{ steps.simulator.outputs.udid }}'
-          idb ui describe-all --udid '${{ steps.simulator.outputs.udid }}' --json > "$RUNNER_TEMP/idb-screen.json"
-          node -e "const x=require(process.argv[1]);if(!x.screen?.width||!x.screen?.height)throw Error('IDB returned no screen point dimensions');console.log('Screen points:',x.screen.width+'x'+x.screen.height)" "$RUNNER_TEMP/idb-screen.json"
+          idb launch --foreground-if-running "$APP_BUNDLE_ID" --udid '${{ steps.simulator.outputs.udid }}'
+          idb describe --udid '${{ steps.simulator.outputs.udid }}' --json > "$RUNNER_TEMP/idb-screen.json"
+          node -e "const fs=require('fs');const root=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));function find(x){if(!x||typeof x!=='object')return null;const d=x.screen_dimensions;if(d){const width=Number(d.width_points||d.width);const height=Number(d.height_points||d.height);if(width>0&&height>0)return {width,height}}for(const v of Object.values(x)){const d=find(v);if(d)return d}return null}const s=find(root);if(!s)throw Error('IDB describe returned no screen point dimensions');console.log('Screen points:',s.width+'x'+s.height)" "$RUNNER_TEMP/idb-screen.json"
 
       - name: Run the authenticated preview tunnel
         env:
@@ -165,7 +167,7 @@ jobs:
           echo "Simulator boot: ${BOOT_SECONDS}s; selected device: $SIMULATOR_NAME"
           SESSION_BRANCH="phase0/session-${GITHUB_RUN_ID}"
           mkdir -p phase0/runner-evidence
-          node -e 'const fs=require("fs");const p=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));if(!p.screen?.width||!p.screen?.height)throw Error("IDB screen dimensions missing");process.stdout.write(JSON.stringify({tunnelUrl:process.argv[2],deviceName:process.argv[3],runId:process.argv[4],logicalSize:{width:p.screen.width,height:p.screen.height},createdAt:new Date().toISOString()}))' "$RUNNER_TEMP/idb-screen.json" "$TUNNEL_URL" "$SIMULATOR_NAME" "$GITHUB_RUN_ID" > phase0/runner-evidence/session.json
+          node -e 'const fs=require("fs");const root=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));function find(x){if(!x||typeof x!=="object")return null;const d=x.screen_dimensions;if(d){const width=Number(d.width_points||d.width);const height=Number(d.height_points||d.height);if(width>0&&height>0)return {width,height,pixelRatio:Number(d.density)||null}}for(const v of Object.values(x)){const d=find(v);if(d)return d}return null}const logicalSize=find(root);if(!logicalSize)throw Error("IDB screen dimensions missing");process.stdout.write(JSON.stringify({tunnelUrl:process.argv[2],deviceName:process.argv[3],runId:process.argv[4],logicalSize,createdAt:new Date().toISOString()}))' "$RUNNER_TEMP/idb-screen.json" "$TUNNEL_URL" "$SIMULATOR_NAME" "$GITHUB_RUN_ID" > phase0/runner-evidence/session.json
           git switch --create "$SESSION_BRANCH" "$GITHUB_SHA"
           git add --force phase0/runner-evidence/session.json
           git -c user.name='github-actions' -c user.email='github-actions@users.noreply.github.com' commit -m "phase 0: publish temporary tunnel metadata"
