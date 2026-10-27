@@ -79,7 +79,7 @@ You've successfully run and modified your React Native App. :partying_face:
 
 ## iOS UI test pipeline
 
-The `iOS UI Tests` workflow builds this app on a GitHub-hosted macOS runner and runs the Detox smoke test on an available iPhone simulator. Pushes to `main`, `master`, or `develop` start the workflow. The test checks that the default welcome screen appears.
+The `iOS UI Tests` workflow builds this app on a GitHub-hosted macOS runner and runs the Detox smoke test on an available iPhone simulator. It embeds the JavaScript bundle in the Debug simulator app so the CI test does not depend on Metro auto-detection. Pushes to `main`, `master`, or `develop` start the workflow. The test checks that the default welcome screen appears.
 
 Open the repository's **Actions** tab to view the run. Screenshots and videos are uploaded as the `ios-ui-test-artifacts-<run number>` artifact when Detox produces them.
 

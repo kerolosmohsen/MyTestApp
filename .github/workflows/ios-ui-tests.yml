@@ -71,40 +71,13 @@ jobs:
       - name: Build app for the simulator
         run: npx detox build --configuration ios.sim.debug
         env:
+          FORCE_BUNDLING: '1'
           LANG: en_US.UTF-8
 
       - name: Run UI tests
-        shell: bash
-        run: |
-          npx react-native start --port 8081 > "$RUNNER_TEMP/metro.log" 2>&1 &
-          metro_pid=$!
-          trap 'kill "$metro_pid" 2>/dev/null || true' EXIT
-
-          for attempt in {1..60}; do
-            if curl --silent --fail --max-time 2 http://127.0.0.1:8081/status | grep -q 'packager-status:running'; then
-              echo "Metro is ready."
-              break
-            fi
-            if [ "$attempt" -eq 60 ]; then
-              cat "$RUNNER_TEMP/metro.log"
-              echo "Metro did not start in time." >&2
-              exit 1
-            fi
-            sleep 2
-          done
-
-          curl --silent --show-error --fail --max-time 300 \
-            --output /dev/null \
-            'http://127.0.0.1:8081/index.bundle?platform=ios&dev=true&minify=false'
-
-          if npx detox test --configuration ios.sim.debug --headless \
-            --record-videos all --take-screenshots all --loglevel verbose; then
-            :
-          else
-            status=$?
-            cat "$RUNNER_TEMP/metro.log"
-            exit "$status"
-          fi
+        run: >-
+          npx detox test --configuration ios.sim.debug --headless
+          --record-videos all --take-screenshots all --loglevel verbose
         env:
           LANG: en_US.UTF-8
 
